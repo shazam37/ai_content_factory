@@ -1,0 +1,17 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+storage/audio/*
+storage/images/*
+storage/videos/*
+storage/thumbnails/*
+!storage/**/.gitkeep
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.coverage
+htmlcov/

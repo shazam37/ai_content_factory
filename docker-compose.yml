@@ -1,0 +1,95 @@
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - ./storage:/storage
+    env_file: .env
+    environment:
+      - STORAGE_BASE_PATH=/storage
+    depends_on:
+      - db
+      - redis
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    volumes:
+      - ./backend:/app
+      - ./storage:/storage
+    env_file: .env
+    environment:
+      - STORAGE_BASE_PATH=/storage
+    depends_on:
+      - db
+      - redis
+    command: celery -A app.core.celery_app worker --loglevel=info --concurrency=2 -Q default,generation,video
+
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    volumes:
+      - ./backend:/app
+      - ./storage:/storage
+    env_file: .env
+    depends_on:
+      - db
+      - redis
+    command: celery -A app.core.celery_app beat --loglevel=info
+
+  flower:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "5555:5555"
+    env_file: .env
+    depends_on:
+      - redis
+    command: celery -A app.core.celery_app flower --port=5555
+
+  db:
+    image: postgres:16-alpine
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-content_factory}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-content_factory}
+      POSTGRES_DB: ${POSTGRES_DB:-content_factory}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  pg_data:
+  redis_data:
+  ollama_data:
