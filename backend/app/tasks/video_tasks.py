@@ -29,8 +29,9 @@ def render_video(
     from app.models.video import Video, VideoStatus
     from app.core import storage
     from app.core.config import settings
-    from app.services.voice_generation.edge_tts_generator import EdgeTTSGenerator
+    from app.services.voice_generation.factory import get_voice_generator
     from app.services.image_generation.pexels_generator import get_image_generator
+    from app.services.image_generation.caption import add_caption
     from app.services.video_assembly.ffmpeg_assembler import FFmpegAssembler
 
     async def _run() -> dict:
@@ -53,7 +54,7 @@ def render_video(
 
             try:
                 # --- Audio ---
-                tts = EdgeTTSGenerator()
+                tts = get_voice_generator()
                 audio_out = storage.audio_path(f"audio_{run_id}.mp3")
                 full_text = f"{script.hook} {script.main_content} {script.cta}"
                 voice_result = await tts.generate(
@@ -74,15 +75,19 @@ def render_video(
                 image_paths: list[str] = []
                 scene_durations: list[float] = []
 
+                import asyncio as _aio
                 for i, scene in enumerate(scenes):
                     img_out = storage.image_path(f"img_{run_id}_{i:03d}.png")
-                    prompt = scene.get("image_prompt", scene.get("text", script.title))
+                    image_prompt = scene.get("image_prompt", scene.get("text", script.title))
+                    scene_text = scene.get("text", "")
                     await img_gen.generate(
-                        prompt,
+                        image_prompt,
                         img_out,
                         width=settings.default_video_width,
                         height=settings.default_video_height,
                     )
+                    if scene_text:
+                        await _aio.to_thread(add_caption, img_out, scene_text)
                     image_paths.append(img_out)
                     scene_durations.append(float(scene.get("duration_seconds", 5.0)))
 
@@ -95,6 +100,7 @@ def render_video(
                 vid_out = storage.video_path(f"video_{run_id}.mp4")
                 thumb_out = storage.thumbnail_path(f"thumb_{run_id}.jpg")
 
+                topic = await db.get(Topic, script.topic_id)
                 asm_result = await assembler.assemble(
                     audio_path=voice_result.audio_path,
                     image_paths=image_paths,
@@ -104,6 +110,9 @@ def render_video(
                     width=settings.default_video_width,
                     height=settings.default_video_height,
                     fps=settings.default_video_fps,
+                    niche=topic.niche if topic else "science",
+                    topic_id=topic.id if topic else 0,
+                    topic_title=topic.title if topic else "",
                 )
 
                 # --- Finalize ---
@@ -114,7 +123,6 @@ def render_video(
                 video.file_size_mb = asm_result.file_size_mb
                 video.render_time_seconds = time.time() - start_time
 
-                topic = await db.get(Topic, script.topic_id)
                 if topic:
                     topic.status = TopicStatus.DONE
 

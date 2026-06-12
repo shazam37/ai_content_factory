@@ -33,5 +33,10 @@ celery_app.conf.update(
             "task": "app.tasks.trend_tasks.discover_trends",
             "schedule": crontab(minute=0),
         },
+        # Replenish topics every 6 hours — keeps pending queue from ever running dry
+        "replenish-topics": {
+            "task": "app.tasks.generation_tasks.replenish_topics",
+            "schedule": crontab(minute=0, hour="*/6"),
+        },
     },
 )

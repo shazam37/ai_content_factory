@@ -81,6 +81,9 @@ class PexelsImageGenerator(BaseImageGenerator):
 
 
 def get_image_generator() -> BaseImageGenerator:
+    if settings.image_provider in ("loremflickr", "pollinations"):
+        from app.services.image_generation.loremflickr_generator import LoremFlickrGenerator
+        return LoremFlickrGenerator()
     if settings.image_provider == "pexels":
         return PexelsImageGenerator()
     return FFmpegSlideGenerator()

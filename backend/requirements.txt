@@ -16,6 +16,12 @@ redis==5.2.1
 httpx==0.28.0
 aiohttp==3.11.10
 
+# LLM providers (install only what you use)
+groq>=0.11.0
+openai>=1.54.0
+anthropic>=0.40.0
+google-generativeai>=0.8.0
+
 # Pydantic
 pydantic==2.10.3
 pydantic-settings==2.6.1
@@ -27,6 +33,7 @@ pytrends==4.9.2
 
 # Voice generation
 edge-tts==6.1.12
+gtts>=2.5.3
 
 # Image & video processing
 Pillow==11.0.0

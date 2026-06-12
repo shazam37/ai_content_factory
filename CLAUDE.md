@@ -65,7 +65,7 @@ The production machine is:
 | Task Queue | Celery + Redis |
 | Database | PostgreSQL via async SQLAlchemy 2.0 |
 | Migrations | Alembic |
-| LLM | Ollama (`qwen2.5:7b`) |
+| LLM | Provider-agnostic via `services/llm/` — Groq (default), OpenAI, Anthropic, Gemini, Ollama |
 | TTS | Edge TTS (Microsoft neural voices, free) |
 | Image generation | Pillow gradient slides (Phase 1) / Pexels API (optional) |
 | Video assembly | FFmpeg with Ken Burns effect |
@@ -120,11 +120,20 @@ ai-content-factory/
         │   │   ├── reddit_discoverer.py
         │   │   ├── rss_discoverer.py
         │   │   └── orchestrator.py  ← runs all discoverers, deduplicates, saves to DB
+        │   ├── llm/                 ← provider-agnostic LLM abstraction layer
+        │   │   ├── base.py          ← BaseLLMClient.complete(system, user, ...) -> str
+        │   │   ├── groq_client.py   ← Groq SDK (llama-3.3-70b, mixtral, gemma, …)
+        │   │   ├── openai_client.py ← OpenAI SDK (gpt-4o, …)
+        │   │   ├── anthropic_client.py ← Anthropic SDK (claude-opus-4-8, …)
+        │   │   ├── gemini_client.py ← Google GenerativeAI SDK
+        │   │   ├── ollama_client.py ← httpx → local Ollama REST API
+        │   │   └── factory.py       ← get_llm_client(settings), get_quality_client(settings)
         │   ├── script_generation/
         │   │   ├── base.py          ← BaseScriptGenerator, GeneratedScript dataclass
         │   │   ├── prompts.py       ← system/user prompts, niche style guides, quality prompt
-        │   │   ├── ollama_generator.py
-        │   │   └── quality_scorer.py ← scores 0-10, threshold 5.5 for auto-approve
+        │   │   ├── llm_generator.py ← LLMScriptGenerator(BaseLLMClient) — active implementation
+        │   │   ├── ollama_generator.py ← legacy; kept for reference, not used
+        │   │   └── quality_scorer.py ← QualityScorer(BaseLLMClient); scores 0-10, threshold 5.5
         │   ├── voice_generation/
         │   │   ├── base.py          ← BaseVoiceGenerator, VoiceGenerationResult dataclass
         │   │   └── edge_tts_generator.py
@@ -195,8 +204,8 @@ Topic created (manually or from trend)
     ↓
 POST /topics/{id}/generate-script
     → Celery task: generate_script
-    → OllamaScriptGenerator.generate(topic, niche)
-    → QualityScorer.score(script)  [auto-approve if score ≥ 5.5]
+    → LLMScriptGenerator(get_llm_client(settings)).generate(topic, niche)
+    → QualityScorer(get_quality_client(settings)).score(script)  [auto-approve if score ≥ 5.5]
     → Script saved to DB
     ↓
 POST /scripts/{id}/approve  [if manual review needed]
@@ -260,8 +269,20 @@ All config lives in `.env` (gitignored). See `.env.example` for the full list. K
 ```
 DATABASE_URL          postgresql+asyncpg://content_factory:content_factory@db:5432/content_factory
 REDIS_URL             redis://redis:6379/0
+
+# LLM (pick one provider setup)
+LLM_PROVIDER          auto            # auto | groq | openai | anthropic | gemini | ollama
+LLM_MODEL             llama-3.3-70b-versatile   # model name for your provider
+LLM_QUALITY_MODEL     llama-3.1-8b-instant      # lighter model for quality scoring (optional)
+GROQ_API_KEY          gsk_...         # for Groq
+OPENAI_API_KEY        sk-...          # for OpenAI
+ANTHROPIC_API_KEY     sk-ant-...      # for Anthropic
+GEMINI_API_KEY        AIza...         # for Gemini
+
+# Ollama (local fallback — used when LLM_MODEL contains ":")
 OLLAMA_BASE_URL       http://ollama:11434
 OLLAMA_MODEL          qwen2.5:7b
+
 IMAGE_PROVIDER        ffmpeg_slides   # or: pexels
 PEXELS_API_KEY        (optional)
 VOICE_DEFAULT         en-US-GuyNeural
@@ -324,8 +345,8 @@ make test                Run pytest
 - [x] All ORM models (Trend, Topic, Script, Video, PublishingRecord, Analytics)
 - [x] Pydantic v2 schemas for all models
 - [x] Trend discovery: RSS (BBC, ScienceDaily, NYT, HN, Dev.to) + Reddit (optional, needs API keys)
-- [x] Script generation: Ollama `qwen2.5:7b` with JSON-mode output, niche-specific style guides, scene breakdown
-- [x] Quality scoring: same Ollama model as reviewer; scores hook strength, clarity, virality, retention potential; auto-approve threshold 5.5/10
+- [x] Script generation: provider-agnostic `LLMScriptGenerator` via `services/llm/` layer; supports Groq, OpenAI, Anthropic, Gemini, Ollama; JSON-mode output, niche-specific style guides, scene breakdown
+- [x] Quality scoring: `QualityScorer(BaseLLMClient)` — provider-agnostic; scores hook strength, clarity, virality, retention potential; auto-approve threshold 5.5/10
 - [x] Voice generation: Edge TTS (Microsoft neural) — 6 voices (male/female US, GB, AU)
 - [x] Image generation: Pillow gradient slides with niche color palettes (zero dependencies); Pexels API as optional upgrade
 - [x] Video assembly: FFmpeg with Ken Burns zoom/pan effects, 1080×1920, audio mux, thumbnail extraction

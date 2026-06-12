@@ -1,10 +1,7 @@
 import json
 import logging
 
-import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
-
-from app.core.config import settings
+from app.services.llm.base import BaseLLMClient
 from app.services.script_generation.base import GeneratedScript
 from app.services.script_generation.prompts import QUALITY_PROMPT
 
@@ -12,13 +9,27 @@ logger = logging.getLogger(__name__)
 
 MINIMUM_QUALITY_SCORE = 5.5
 
+_QUALITY_SYSTEM = (
+    "You are a social media content quality evaluator. "
+    "Respond only with a JSON object containing your scores and feedback."
+)
+
+
+def _parse_json(raw: str) -> dict:
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        if start != -1 and end > 0:
+            return json.loads(raw[start:end])
+        return {}
+
 
 class QualityScorer:
-    def __init__(self, model: str | None = None) -> None:
-        self.model = model or settings.ollama_quality_model
-        self.base_url = settings.ollama_base_url
+    def __init__(self, client: BaseLLMClient) -> None:
+        self._client = client
 
-    @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=1, max=5))
     async def score(self, script: GeneratedScript) -> tuple[float, dict]:
         prompt = QUALITY_PROMPT.format(
             hook=script.hook,
@@ -26,26 +37,19 @@ class QualityScorer:
             cta=script.cta,
             title=script.title,
         )
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                f"{self.base_url}/api/chat",
-                json={
-                    "model": self.model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "stream": False,
-                    "format": "json",
-                    "options": {"temperature": 0.2},
-                },
-            )
-            response.raise_for_status()
-            raw = response.json()["message"]["content"]
 
         try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            start = raw.find("{")
-            end = raw.rfind("}") + 1
-            data = json.loads(raw[start:end]) if start != -1 else {}
+            raw = await self._client.complete(
+                system=_QUALITY_SYSTEM,
+                user=prompt,
+                temperature=0.2,
+                max_tokens=1024,
+                json_mode=True,
+            )
+            data = _parse_json(raw)
+        except Exception as exc:
+            logger.warning("Quality scoring failed (%s), using neutral score", exc)
+            data = {}
 
         overall = float(data.get("overall_score", 5.0))
         return overall, data

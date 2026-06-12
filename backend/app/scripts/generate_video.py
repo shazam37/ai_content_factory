@@ -15,24 +15,35 @@ from app.core import storage
 from app.models.topic import Topic, TopicStatus
 from app.models.script import Script, ScriptStatus
 from app.models.video import Video, VideoStatus
-from app.services.script_generation.ollama_generator import OllamaScriptGenerator
+from app.services.llm.factory import get_llm_client, get_quality_client
+from app.services.script_generation.llm_generator import LLMScriptGenerator
 from app.services.script_generation.quality_scorer import QualityScorer
-from app.services.voice_generation.edge_tts_generator import EdgeTTSGenerator
+from app.services.voice_generation.factory import get_voice_generator
 from app.services.image_generation.pexels_generator import get_image_generator
+from app.services.image_generation.caption import add_caption
 from app.services.video_assembly.ffmpeg_assembler import FFmpegAssembler
 import uuid
 
 
-async def run(topic_id: int, voice: str | None = None) -> None:
+async def run(topic_id: int, voice: str | None = None, force: bool = False) -> None:
     async with AsyncSessionLocal() as db:
         topic = await db.get(Topic, topic_id)
         if not topic:
             print(f"Topic {topic_id} not found", file=sys.stderr)
             sys.exit(1)
 
+        from app.models.topic import TopicStatus as _TS
+        if topic.status == _TS.DONE and not force:
+            print(
+                f"Topic {topic_id} already has a video (status=done).\n"
+                f"Pass --force to regenerate it.",
+                file=sys.stderr,
+            )
+            sys.exit(0)
+
         print(f"\n[1/5] Generating script for: {topic.title}")
-        gen = OllamaScriptGenerator()
-        scorer = QualityScorer()
+        gen = LLMScriptGenerator(get_llm_client(settings))
+        scorer = QualityScorer(get_quality_client(settings))
         script_data = await gen.generate(topic.title, topic.niche)
         score, feedback = await scorer.score(script_data)
         print(f"      Quality score: {score:.1f}/10")
@@ -60,7 +71,7 @@ async def run(topic_id: int, voice: str | None = None) -> None:
 
         print(f"\n[2/5] Generating voiceover...")
         run_id = uuid.uuid4().hex[:8]
-        tts = EdgeTTSGenerator()
+        tts = get_voice_generator()
         audio_out = storage.audio_path(f"audio_{run_id}.mp3")
         full_text = f"{script.hook} {script.main_content} {script.cta}"
         voice_result = await tts.generate(full_text, audio_out, voice)
@@ -74,9 +85,13 @@ async def run(topic_id: int, voice: str | None = None) -> None:
 
         for i, scene in enumerate(scenes):
             img_out = storage.image_path(f"img_{run_id}_{i:03d}.png")
-            prompt = scene.get("image_prompt", scene.get("text", script.title))
-            print(f"      Scene {i+1}: {prompt[:60]}")
-            await img_gen.generate(prompt, img_out, settings.default_video_width, settings.default_video_height)
+            image_prompt = scene.get("image_prompt", scene.get("text", script.title))
+            scene_text = scene.get("text", "")
+            print(f"      Scene {i+1}: {image_prompt[:60]}")
+            await img_gen.generate(image_prompt, img_out, settings.default_video_width, settings.default_video_height)
+            # Burn narration caption onto the image
+            if scene_text:
+                await asyncio.to_thread(add_caption, img_out, scene_text)
             image_paths.append(img_out)
             scene_durations.append(float(scene.get("duration_seconds", 5.0)))
 
@@ -93,6 +108,9 @@ async def run(topic_id: int, voice: str | None = None) -> None:
             scene_durations=scene_durations,
             width=settings.default_video_width,
             height=settings.default_video_height,
+            niche=topic.niche,
+            topic_id=topic.id,
+            topic_title=topic.title,
         )
         render_time = time.time() - start
 
@@ -126,5 +144,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--topic-id", type=int, required=True)
     parser.add_argument("--voice", type=str, default=None)
+    parser.add_argument("--force", action="store_true",
+                        help="Regenerate even if topic already has a video")
     args = parser.parse_args()
-    asyncio.run(run(args.topic_id, args.voice))
+    asyncio.run(run(args.topic_id, args.voice, args.force))
